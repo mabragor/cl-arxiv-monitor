@@ -6,7 +6,7 @@
   :license "MIT"
   :serial t
   :version "0.1"
-  :depends-on (#:cl-interpol #:cl-ppcre #:iterate #:cl-arxiv-api #:cl-smtp)
+  :depends-on (#:cl-interpol #:cl-ppcre #:iterate #:cl-arxiv-api #:cl-smtp #:clesh)
   :components ((:file "package")
                (:file "cl-arxiv-monitor")))
 
