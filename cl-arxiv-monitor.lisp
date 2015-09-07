@@ -7,6 +7,7 @@
 (defparameter *known-papers* (make-hash-table :test #'equal))
 
 (defparameter *known-papers-pathname* ".arxiv-monitor-known-papers.txt")
+(defparameter *email* "popolit@gmail.com")
 
 (defun err-script (str)
   (multiple-value-bind (out err errno) (clesh:script str)
@@ -31,7 +32,7 @@
 
 
 (defparameter *authors-of-interest*
-  '(("Morozov" ("Alexei" "A\\." "Al\\."))
+  '(;; ("Morozov" ("Alexei" "A\\." "Al\\."))
     ("Popolitov" ("Alexandr" "A\\."))))
 
 (defun get-author-recent-papers (author &optional (start 0))
@@ -106,7 +107,12 @@
 		(finally (return res)))))))
 
 (defun generate-email-report (new-papers)
-  ...)
+  nil)
+  ;; ...)
+
+(defun send-the-email (title body)
+  (with-email (stream *email* :subject title :from "<noreply>@arxivmon.org")
+    (format stream "~a" body)))
 
 (defun get-new-papers ()
   (load-known-papers)
@@ -117,6 +123,7 @@
 		      paper)))
     (iter (for (key nil) in-hashtable new-papers)
 	  (setf (gethash key *known-papers*) t))
-    (generate-email-report new-papers)
+    (send-the-email (generate-email-header new-papers)
+		    (generate-email-report new-papers))
     (save-known-papers)))
     
