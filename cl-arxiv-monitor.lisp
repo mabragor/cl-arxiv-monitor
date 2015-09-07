@@ -4,10 +4,23 @@
 
 (cl-interpol:enable-interpol-syntax)
 
-(defparameter *known-papers* (make-hash-table :test #'equal))
+(defvar *known-papers* (make-hash-table :test #'equal))
+(defvar *authors-of-interest*
+  '(;; ("Morozov" ("Alexei" "A\\." "Al\\."))
+    ("Popolitov" ("Alexandr" "A\\."))))
+(defvar *known-papers-pathname* ".arxiv-monitor-known-papers.txt")
+(defvar *email* "popolit@gmail.com")
+(defvar *conf-file* ".arxivmon.rc")
 
-(defparameter *known-papers-pathname* ".arxiv-monitor-known-papers.txt")
-(defparameter *email* "popolit@gmail.com")
+(defmacro with-muffled-failed-to-parse-warns (&body body)
+  `(handler-bind
+       ((alexandria::warning
+	 (lambda (warning)
+	   (when (alexandria:starts-with-subseq
+	   	  "Failed to parse"
+		  (simple-condition-format-control warning))
+	     (muffle-warning warning)))))
+     ,@body))
 
 (defun err-script (str)
   (multiple-value-bind (out err errno) (clesh:script str)
@@ -15,10 +28,32 @@
 	out
 	(error err))))
 
+(defun escape-single-quoted-string (str)
+  (with-output-to-string (stream)
+    (iter (for char in-string str)
+	  (if (char= #\' char)
+	      (progn (write-char #\' stream)
+		     (write-char #\" stream)
+		     (write-char #\' stream)
+		     (write-char #\" stream)
+		     (write-char #\' stream))
+	      (write-char char stream)))))
+
+(defun bash-escape-string (str)
+  (let ((clesh:*shell* "/bin/bash"))
+    (let ((it (err-script #?"printf \"%q\" '$((escape-single-quoted-string str))'")))
+      (subseq it 0 (1- (length it))))))
+
 (defun load-known-papers ()
-  (iter (for line in-file (merge-pathnames *known-papers-pathname* (user-homedir-pathname))
-	     using #'read-line)
-	(setf (gethash (string-trim '(#\space #\tab #\newline) line) *known-papers*) t)))
+  (let ((path (merge-pathnames *known-papers-pathname* (user-homedir-pathname))))
+    (if (not (probe-file path))
+	(err-script #?"touch $(path)"))
+    (iter (for line in-file path
+	       using #'read-line)
+	  (setf (gethash (string-trim '(#\space #\tab #\newline) line) *known-papers*) t))))
+
+(defun dump-known-papers ()
+  (clrhash *known-papers*))
 
 (defun save-known-papers ()
   (let ((path (merge-pathnames #?"$(*known-papers-pathname*)" (user-homedir-pathname)))
@@ -31,12 +66,9 @@
     (err-script #?"mv $(new-path) $(path)")))
 
 
-(defparameter *authors-of-interest*
-  '(;; ("Morozov" ("Alexei" "A\\." "Al\\."))
-    ("Popolitov" ("Alexandr" "A\\."))))
-
 (defun get-author-recent-papers (author &optional (start 0))
-  (arxiv-get `(:author ,author) :start start :max-results 10 :sort-by :submitted :sort-order :desc))
+  (with-muffled-failed-to-parse-warns
+    (arxiv-get `(:author ,author) :start start :max-results 10 :sort-by :submitted :sort-order :desc)))
 
 (defun get-authors (lst)
   (iter (for elt in lst)
@@ -106,15 +138,54 @@
 		      (terminate)))
 		(finally (return res)))))))
 
+(defun print-author-names (new-papers)
+  (iter outer (for (paper-id paper) in-hashtable new-papers)
+	(iter (for field in paper)
+	      (if (not (eq :author (car field)))
+		  (next-iteration)
+		  (let ((author (cdr field)))
+		    (iter (for author-of-interest in *authors-of-interest*)
+			  (when (matching-author-p author author-of-interest)
+			    (in outer (collect (car author-of-interest) into res))
+			    (in outer (next-iteration)))))))
+	(finally (return-from outer (format nil "~{~a~^, ~}" res)))))
+
+(defun generate-email-header (new-papers)
+  (let ((count (hash-table-count new-papers)))
+    (format nil "[arXiv] ~a new: ~a"
+	    count
+	    (if (> 3 count)
+		(print-author-names new-papers)
+		"many authors"))))
+
+	  
 (defun generate-email-report (new-papers)
-  nil)
-  ;; ...)
+  (iter (for (paper-id paper) in-hashtable new-papers)
+	(collect (format nil "~{~a~^, ~}:~%    ~a~%    ~a"
+			 (get-authors paper)
+			 (cdr (assoc :title paper))
+			 (cdr (assoc :alternate-link paper)))
+	  into res)
+	(finally (return (format nil "~{~a~^~%~%~}" res)))))
 
 (defun send-the-email (title body)
-  (with-email (stream *email* :subject title :from "<noreply>@arxivmon.org")
-    (format stream "~a" body)))
+  (let ((ebody (escape-single-quoted-string body))
+	(etitle (escape-single-quoted-string title)))
+    ;; (values etitle ebody)
+    ;; (values title body)
+    (err-script #?"echo '$(ebody)'  | mail -s '$(etitle)' $(*email*)")
+    ))
+  
+;; nil)
+  ;; (with-email (stream *email* :subject title :from "<noreply>@arxivmon.org")
+  ;;   (format stream "~a" body)))
 
-(defun get-new-papers ()
+(defun dwim-send (new-papers)
+  (if (< 0 (hash-table-count new-papers))
+      (send-the-email (generate-email-header new-papers)
+		      (generate-email-report new-papers))))
+
+(defun get-new-papers (&key dont-send)
   (load-known-papers)
   (let ((new-papers (make-hash-table :test #'equal)))
     (iter (for (author . nil) in *authors-of-interest*)
@@ -123,7 +194,26 @@
 		      paper)))
     (iter (for (key nil) in-hashtable new-papers)
 	  (setf (gethash key *known-papers*) t))
-    (send-the-email (generate-email-header new-papers)
-		    (generate-email-report new-papers))
-    (save-known-papers)))
+    (if (not dont-send)
+	(dwim-send new-papers))
+    (save-known-papers)
+    ))
     
+(defun %entry-point ()
+  (let ((path (merge-pathnames *conf-file* (user-homedir-pathname))))
+    (handler-case (progn (if (probe-file path)
+			     (let ((*package* (find-package "CL-ARXIV-MONITOR")))
+			       (load path)))
+			 (get-new-papers))
+      (error () :fail!))
+    :success!))
+
+(defun entry-point ()
+  (let ((code (%entry-point)))
+    (if (eq :success! code)
+	(sb-ext:exit :code 0)
+	(sb-ext:exit :code 1))))
+
+(defun make-cronable ()
+  (sb-ext:save-lisp-and-die (merge-pathnames "arxivmon" (user-homedir-pathname))
+			    :toplevel #'entry-point))
