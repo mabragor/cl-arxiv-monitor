@@ -63,6 +63,19 @@ a list of entries, each of which is a surname
 
 Both surname and name are actually regexps (in syntax of CL-PPCRE).
 
+Make a cronjob
+--------------
+
+In command prompt
+```bash
+crontab -e
+```
+and then add a cronline with something like
+
+```bash
+0 6 * * * /usr/local/bin/sbcl --core ~/arxivmon 1>>~/arxivmon.log 2>>~/arxivmon.err
+```
+
 TODO
 ----
 
